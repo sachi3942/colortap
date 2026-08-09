@@ -1,0 +1,78 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # If a .zip file was committed straight to the repo root (instead of
+      # extracted first), unzip it here and flatten it so the project
+      # (the folder containing build.gradle / settings.gradle) ends up
+      # directly at the repo root, wherever it was nested inside the zip.
+      - name: Auto-extract any zip dropped at repo root
+        run: |
+          set -e
+          shopt -s nullglob
+          zips=(*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "No zip file at repo root - assuming source is already extracted."
+            exit 0
+          fi
+
+          for z in "${zips[@]}"; do
+            echo "Found $z - extracting..."
+            mkdir -p .__extracted
+            unzip -q "$z" -d .__extracted
+            rm -f "$z"
+          done
+
+          # Find the directory that actually contains the Gradle project
+          # (handles any level of nesting inside the zip, e.g.
+          # ColorTapBot/ColorTapBot/... or a single extra wrapper folder).
+          project_dir=$(find .__extracted -maxdepth 6 -type f -name "settings.gradle" -printf '%h\n' | head -n1)
+          if [ -z "$project_dir" ]; then
+            project_dir=$(find .__extracted -maxdepth 6 -type f -name "build.gradle" -printf '%h\n' | head -n1)
+          fi
+
+          if [ -z "$project_dir" ]; then
+            echo "::error::Could not find build.gradle/settings.gradle inside the uploaded zip."
+            find .__extracted -maxdepth 6
+            exit 1
+          fi
+
+          echo "Project found at: $project_dir"
+          # Move its contents up to the repo root, overwriting nothing else important.
+          shopt -u nullglob
+          cp -rn "$project_dir"/. .
+          rm -rf .__extracted
+          echo "Repo root now contains:"
+          ls -la
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Grant execute permission for gradlew
+        run: |
+          if [ ! -f gradlew ]; then
+            gradle wrapper --gradle-version 8.7
+          fi
+          chmod +x gradlew
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ColorTapBot-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
